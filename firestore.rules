@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function base(d, id) {
+      return d.id == id && d.createdAt is number && d.updatedAt is number
+        && (request.method == 'create' || d.createdAt == resource.data.createdAt);
+    }
+    function color(c) { return c is string && c.matches('^#[0-9A-Fa-f]{6}$'); }
+    function named(d) { return d.nombre is string && d.nombre.size() > 0 && d.nombre.size() <= 200; }
+    function itinerary(i) { return i is map && i.dur is number && i.dur > 0 && i.bloques is list && i.bloques.size() <= 100; }
+    function processService(uid, id) {
+      return id is string && exists(/databases/$(database)/documents/users/$(uid)/servicios/$(id))
+        && get(/databases/$(database)/documents/users/$(uid)/servicios/$(id)).data.tipoSeguimiento == 'proceso';
+    }
+    function optionalParent(d, uid, field, kind) {
+      return !(field in d) || (d[field] is string && exists(/databases/$(database)/documents/users/$(uid)/$(kind)/$(d[field])));
+    }
+    function classParents(d, uid) {
+      return optionalParent(d, uid, 'servicioId', 'servicios')
+        && optionalParent(d, uid, 'carpetaId', 'carpetas') && optionalParent(d, uid, 'cicloId', 'ciclos')
+        && (!('carpetaId' in d) || ('servicioId' in d && get(/databases/$(database)/documents/users/$(uid)/carpetas/$(d.carpetaId)).data.servicioId == d.servicioId))
+        && (!('cicloId' in d) || ('servicioId' in d && get(/databases/$(database)/documents/users/$(uid)/ciclos/$(d.cicloId)).data.servicioId == d.servicioId));
+    }
+    match /users/{uid}/servicios/{id} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && base(request.resource.data, id) && named(request.resource.data)
+        && request.resource.data.keys().hasOnly(['id','createdAt','updatedAt','nombre','descripcion','duracion','capacidad','precio','color','emoji','tipoSeguimiento','objetivosTipicos','itinerarioPlantilla','notasInternas'])
+        && request.resource.data.descripcion is string && request.resource.data.duracion is number && request.resource.data.duracion > 0
+        && request.resource.data.capacidad is int && request.resource.data.capacidad > 0
+        && request.resource.data.precio is number && request.resource.data.precio >= 0
+        && color(request.resource.data.color) && request.resource.data.emoji is string
+        && request.resource.data.tipoSeguimiento in ['ninguno','por_clase','proceso']
+        && request.resource.data.objetivosTipicos is string && request.resource.data.notasInternas is string
+        && itinerary(request.resource.data.itinerarioPlantilla);
+    }
+    match /users/{uid}/carpetas/{id} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && base(request.resource.data, id) && named(request.resource.data)
+        && request.resource.data.keys().hasOnly(['id','createdAt','updatedAt','nombre','estilo','dias','horario','color','servicioId','seccionesCoreo','avance','coreoTerminada'])
+        && processService(uid, request.resource.data.servicioId) && color(request.resource.data.color)
+        && request.resource.data.estilo is string && request.resource.data.horario is string
+        && request.resource.data.dias is list && request.resource.data.dias.size() <= 7
+        && request.resource.data.seccionesCoreo is list && request.resource.data.seccionesCoreo.size() <= 100
+        && request.resource.data.avance is list && request.resource.data.coreoTerminada is bool;
+    }
+    match /users/{uid}/ciclos/{id} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && base(request.resource.data, id) && named(request.resource.data)
+        && request.resource.data.keys().hasOnly(['id','createdAt','updatedAt','servicioId','mes','nombre','objetivos','notas','alumnas','itinerario'])
+        && processService(uid, request.resource.data.servicioId)
+        && request.resource.data.mes is string && request.resource.data.mes.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && request.resource.data.objetivos is string && request.resource.data.notas is string
+        && request.resource.data.alumnas is list && request.resource.data.alumnas.size() <= 200
+        && itinerary(request.resource.data.itinerario);
+    }
+    match /users/{uid}/clases/{id} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && base(request.resource.data, id)
+        && request.resource.data.keys().hasOnly(['id','createdAt','updatedAt','carpetaId','cicloId','servicioId','fecha','hora','tema','cancion','genero','profesor','energia','tag','calentamiento','dinamicas','notas','trackerEmocional','notasProfesor','itinerario','alumnas','realizada'])
+        && classParents(request.resource.data, uid)
+        && request.resource.data.tema is string && request.resource.data.tema.size() > 0
+        && request.resource.data.fecha is string && request.resource.data.fecha.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.hora is string && request.resource.data.hora.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && request.resource.data.cancion is string && request.resource.data.genero is string && request.resource.data.profesor is string
+        && (request.resource.data.energia == null || (request.resource.data.energia is int && request.resource.data.energia >= 1 && request.resource.data.energia <= 5))
+        && request.resource.data.tag in ['regular','practica','grabacion','cierre','libre']
+        && request.resource.data.calentamiento is list && request.resource.data.dinamicas is list
+        && request.resource.data.notas is string && request.resource.data.notasProfesor is string
+        && request.resource.data.trackerEmocional is map && itinerary(request.resource.data.itinerario)
+        && request.resource.data.alumnas is list && request.resource.data.alumnas.size() <= 200 && request.resource.data.realizada is bool;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
